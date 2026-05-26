@@ -39,50 +39,113 @@ Use at your own risk. Expect bugs, missing edge cases, and API incompatibilities
 
 ## Setup
 
-### Prerequisites
+### What You Need
 
-- Python 3.11+
-- Windows (for pydirectinput input injection — the controller will not inject input on Linux/macOS)
-- A DayZ server with the `@DayZAIPuppet` mod installed
-- A Kimi API key from [platform.moonshot.cn](https://platform.moonshot.cn)
+| Requirement | Why | Where |
+|-------------|-----|-------|
+| **Python 3.11+** | Runs the AI controller | [python.org](https://python.org) or Windows Store |
+| **Windows** | `pydirectinput` only works on Windows for input injection | — |
+| **[uv](https://docs.astral.sh/uv/)** (recommended) or pip | Package manager | `pip install uv` |
+| **DayZ** (Steam) | The game the AI plays | [Steam Store](https://store.steampowered.com/app/221100/DayZ/) |
+| **DayZ server** | Hosts the `@DayZAIPuppet` mod | Local or rented |
+| **Kimi API key** | Access to the Kimi 2.6 Vision model | [platform.moonshot.cn](https://platform.moonshot.cn) |
 
-### Install
+> **No Windows?** You can develop and run tests on Linux/macOS — just can't inject input into a DayZ client without Windows. Set `KIMI_API_KEY` to test the agent's decision-making without a game.
+
+---
+
+### Step 1: Get a Kimi API Key
+
+1. Go to [platform.moonshot.cn](https://platform.moonshot.cn) and create an account
+2. Navigate to **API Keys** in the dashboard
+3. Click **Create new key** and copy it
+4. You'll need this for the `.env` file in Step 3
+
+The free tier includes enough credits for testing. The API uses the OpenAI-compatible format, so the project talks to it via the standard `openai` Python SDK.
+
+---
+
+### Step 2: Install the AI Controller
 
 ```bash
-# Clone
+# Clone the repo
 git clone https://github.com/awdemos/dayz-ai-puppet.git
 cd dayz-ai-puppet
 
-# Create venv and install
+# Install dependencies (using uv — recommended)
 uv venv
+.venv\Scripts\activate        # Windows
+# source .venv/bin/activate   # Linux/macOS (for dev/testing only)
 uv pip install -e ".[dev]"
 
-# Configure
-cp .env.example .env
-# Edit .env and add your KIMI_API_KEY
+# Or with plain pip
+python -m venv .venv
+.venv\Scripts\activate
+pip install -e ".[dev]"
 ```
 
-### Run
+Verify the install:
 
 ```bash
-python -m dayz_ai_puppet
+python -c "import dayz_ai_puppet; print('OK')"
+# Should print: OK
+
+python -m dayz_ai_puppet --help
+# Should print CLI usage
 ```
 
-CLI options:
+Run the test suite:
 
-```
---config PATH       Path to .env file (default: .env)
---tick-rate FLOAT   Seconds between decision cycles (default: 2.0)
---log-level LEVEL   DEBUG, INFO, WARNING, ERROR (default: INFO)
---no-reflexes       Disable hardcoded combat reflexes
---monitor INT       Monitor index for screen capture (1=primary)
+```bash
+python -m pytest tests/ -v
+# All 76 tests should pass
 ```
 
-### DayZ Server Mod
+---
 
-1. Copy `server-mod/@DayZAIPuppet/` into your DayZ server's mod directory
-2. Add `@DayZAIPuppet` to your server's `-mod=` launch parameter
-3. Optionally create `$profile:DayZAIPuppet/config.json`:
+### Step 3: Configure
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` — the only required setting is your API key:
+
+```ini
+KIMI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+Everything else has sensible defaults. See the full [configuration table](#configuration) below.
+
+---
+
+### Step 4: Install the DayZ Server Mod
+
+The server mod runs on your DayZ server (not the client machine). It spawns an AI-controlled player and writes its state (health, position, inventory, nearby entities) to a JSON file the Python controller reads.
+
+**Install on the server:**
+
+1. Copy the entire `server-mod/@DayZAIPuppet/` folder to your DayZ server's mod directory:
+   - Typically: `C:\Program Files (x86)\Steam\steamapps\common\DayZServer\`
+   - The `@DayZAIPuppet` folder should sit alongside other `@ModName` folders
+
+2. Add the mod to your server's startup parameters:
+   ```
+   -mod=@DayZAIPuppet
+   ```
+   If you already have mods: `-mod=@OtherMod;@DayZAIPuppet`
+
+3. Start (or restart) the DayZ server
+
+**Configure the AI player** (optional):
+
+Create a config file at the server's profile directory. On a typical DayZ server this is:
+
+```
+C:\Users\<username>\AppData\Local\DayZ\profiles\DayZAIPuppet\config.json
+```
+
+Or on a dedicated server: `<server-root>\profiles\DayZAIPuppet\config.json`
 
 ```json
 {
@@ -92,7 +155,123 @@ CLI options:
 }
 ```
 
-The mod writes player state to `$profile:DayZAIPuppet/state.json` every few seconds. The Python controller reads this file (or polls HTTP if available).
+| Field | Default | Description |
+|-------|---------|-------------|
+| `spawn_position` | `[6000, 0, 6000]` | X, Y, Z coordinates to spawn the AI player (near the center of Chernarus) |
+| `export_interval_seconds` | `2` | How often the mod writes `state.json` |
+| `starter_loadout` | `["Rag", "Flashlight", "Battery9V"]` | Items to put in the AI player's inventory on spawn |
+
+The mod writes player state to `$profile:DayZAIPuppet/state.json` continuously. This is how the Python controller knows the AI's health, position, and surroundings.
+
+---
+
+### Step 5: Connect the Controller to the Server State
+
+The Python controller needs to read the state file the server mod produces. Two options:
+
+**Option A: Shared file (simplest — server and controller on same machine)**
+
+Set `SERVER_STATE_FILE` in `.env` to the path where the mod writes `state.json`:
+
+```ini
+SERVER_STATE_FILE=C:\Users\you\AppData\Local\DayZ\profiles\DayZAIPuppet\state.json
+```
+
+**Option B: File sync / network share (server and controller on different machines)**
+
+Use a network share, SMB mount, or a tool like `rsync`/`syncthing` to make the server's `state.json` accessible to the controller machine, then point `SERVER_STATE_FILE` at it.
+
+---
+
+### Step 6: Run
+
+Start DayZ on the client machine, load into the server where the mod is installed, then run the controller:
+
+```bash
+python -m dayz_ai_puppet
+```
+
+The controller will start the see-think-act loop:
+1. Captures a screenshot of the DayZ window
+2. Reads the AI player's state from the server mod
+3. Checks hardcoded reflexes (being shot → go prone, infected nearby → attack, low health → heal)
+4. Sends the screenshot + state to Kimi 2.6 Vision API for a decision
+5. Executes the returned actions (movement, looking, interacting, etc.)
+6. Repeats every 2 seconds (configurable via `TICK_RATE`)
+
+Press `Ctrl+C` to stop. The controller handles graceful shutdown — it releases all held keys.
+
+#### CLI Options
+
+```
+python -m dayz_ai_puppet [OPTIONS]
+
+--config PATH       Path to .env file (default: .env)
+--tick-rate FLOAT   Seconds between decision cycles (default: 2.0)
+--log-level LEVEL   DEBUG, INFO, WARNING, ERROR (default: INFO)
+--no-reflexes       Disable hardcoded combat reflexes
+--monitor INT       Monitor index for screen capture (1=primary)
+```
+
+#### Quick Test Without DayZ
+
+To verify the AI controller can talk to the Kimi API without needing DayZ running:
+
+```bash
+python -c "
+from dayz_ai_puppet.config import Settings
+from dayz_ai_puppet.agent.kimi import DayZAgent
+
+s = Settings()  # reads from .env
+agent = DayZAgent(s)
+# Test with a dummy state — no screenshot
+state = {'health': 1.0, 'position': [6000, 0, 6000]}
+print('Agent initialized. API key loaded:', bool(s.kimi_api_key))
+"
+```
+
+---
+
+### Troubleshooting
+
+| Problem | Fix |
+|---------|-----|
+| `ModuleNotFoundError: No module named 'dayz_ai_puppet'` | Make sure you ran `pip install -e ".[dev]"` and activated the venv |
+| `RuntimeError: pydirectinput requires Windows` | Input injection only works on Windows. You can test everything else on Linux/macOS |
+| `openai.AuthenticationError` | Check your `KIMI_API_KEY` in `.env` is correct |
+| `openai.RateLimitError` | You're hitting Kimi API limits. Increase `TICK_RATE` (e.g., 3.0 or 5.0) |
+| Controller starts but DayZ doesn't react | Make sure DayZ is the focused window. The controller sends input to whatever window is active |
+| No state.json from server mod | Check the mod is loaded: look for `@DayZAIPuppet` in the server's startup log. Verify the config path exists |
+| Tests fail on Linux | Some tests mock Windows-only modules — they should still pass. Run `python -m pytest tests/ -v` and check specific failures |
+
+---
+
+## Configuration
+
+All settings are loaded from environment variables or a `.env` file. See `.env.example` for the full list.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `KIMI_API_KEY` | *(required)* | Moonshot AI API key — get one at [platform.moonshot.cn](https://platform.moonshot.cn) |
+| `KIMI_BASE_URL` | `https://api.moonshot.ai/v1` | API endpoint (don't change unless you know what you're doing) |
+| `KIMI_MODEL` | `kimi-k2.6` | Model identifier |
+| `TICK_RATE` | `2.0` | Seconds between decision cycles — increase if hitting API rate limits |
+| `CAPTURE_WIDTH` | `1280` | Screenshot resize width (lower = faster API calls, less detail) |
+| `CAPTURE_HEIGHT` | `720` | Screenshot resize height |
+| `CAPTURE_MONITOR` | `1` | Monitor index for screen capture (1 = primary monitor) |
+| `CAPTURE_QUALITY` | `85` | JPEG quality 1–100 (lower = smaller images, faster uploads) |
+| `SERVER_STATE_URL` | `http://localhost:8080/ai-state` | HTTP endpoint for game state (if available) |
+| `SERVER_STATE_FILE` | *(empty)* | File path to `state.json` from the server mod (fallback if HTTP unavailable) |
+| `SERVER_STATE_TIMEOUT` | `5.0` | HTTP request timeout in seconds |
+| `MEMORY_PATH` | `data/experience_memory.json` | Path to store learned experience (deaths, successes) |
+| `MAX_SHORT_TERM_MEMORY` | `20` | Number of recent interactions kept in context |
+| `REFLEX_ENABLED` | `true` | Enable hardcoded combat reflexes (prone when shot, attack infected, heal when low) |
+| `REFLEX_MELEE_RANGE` | `3.0` | Distance in meters to trigger melee reflex on infected |
+| `REFLEX_LOW_HEALTH_THRESHOLD` | `0.3` | Health fraction (0–1) below which the heal reflex triggers |
+| `LANDMARK_DB_PATH` | `data/landmarks.json` | Path to custom landmark database (built-in Chernarus landmarks used if absent) |
+| `LOG_LEVEL` | `INFO` | Logging verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+
+---
 
 ## Module Reference
 
@@ -111,22 +290,6 @@ The mod writes player state to `$profile:DayZAIPuppet/state.json` every few seco
 | `server/state_client.py` | HTTP/file game state polling with retry |
 | `loop.py` | Main see-think-act loop |
 | `__main__.py` | CLI entry point with signal handling |
-
-## Configuration
-
-All settings are loaded from environment variables or a `.env` file. See `.env.example` for the full list.
-
-Key settings:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `KIMI_API_KEY` | *(required)* | Moonshot AI API key |
-| `KIMI_BASE_URL` | `https://api.moonshot.ai/v1` | API endpoint |
-| `KIMI_MODEL` | `kimi-k2.6` | Model identifier |
-| `TICK_RATE` | `2.0` | Seconds between decision cycles |
-| `CAPTURE_WIDTH` | `1280` | Screenshot resize width |
-| `CAPTURE_HEIGHT` | `720` | Screenshot resize height |
-| `REFLEX_ENABLED` | `true` | Enable hardcoded combat reflexes |
 
 ## License
 
