@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dayz-ai-puppet"
+version = "0.1.0"
+description = "Embodied AI agent for DayZ — sees through a puppet client, thinks with Kimi 2.6 Vision, acts via input injection"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = [
+    "openai>=1.30",
+    "mss>=9.0",
+    "Pillow>=10.0",
+    "pydirectinput>=1.0",
+    "pydantic-settings>=2.0",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+dayz-ai-puppet = "dayz_ai_puppet.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dayz_ai_puppet"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
