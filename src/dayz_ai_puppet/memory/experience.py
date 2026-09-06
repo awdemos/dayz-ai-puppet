@@ -98,7 +98,12 @@ class ExperienceMemory:
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         data = [asdict(lesson) for lesson in self.lessons]
-        self.path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
+        tmp.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        tmp.replace(self.path)
 
 
 def _deserialize_lesson(data: dict[str, Any]) -> Lesson:
